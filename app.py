@@ -1,91 +1,79 @@
-import streamlit as st
 import os
+import shutil
 import numpy as np
+import streamlit as st
 from PIL import Image
-import cv2
+from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
+from tensorflow.keras.preprocessing import image
 from sklearn.metrics.pairwise import cosine_similarity
-import torch
-import torchvision.models as models
-import torchvision.transforms as transforms
-from itertools import combinations
 
-# --- Load ResNet50 (no classifier head) ---
+# Load pre-trained model
 @st.cache_resource
 def load_model():
-    model = models.resnet50(pretrained=True)
-    model = torch.nn.Sequential(*(list(model.children())[:-1]))  # remove last fc layer
-    model.eval()
-    return model
+    return ResNet50(weights="imagenet", include_top=False, pooling="avg")
 
-# --- Image transforms for ResNet ---
-def preprocess_image(img):
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])
-    ])
-    return transform(img).unsqueeze(0)
+model = load_model()
 
-# --- Extract ResNet features ---
-def extract_deep_features(img, model):
-    with torch.no_grad():
-        features = model(preprocess_image(img))
-    return features.squeeze().numpy().flatten()
+# Extract features
+def get_features(img_path):
+    img = image.load_img(img_path, target_size=(224, 224))
+    img_array = image.img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0)
+    img_array = preprocess_input(img_array)
+    features = model.predict(img_array, verbose=0)
+    return features.flatten()
 
-# --- Extract color histogram (HSV) ---
-def extract_color_histogram(img):
-    img_cv = np.array(img)
-    hsv = cv2.cvtColor(img_cv, cv2.COLOR_RGB2HSV)
-    hist = cv2.calcHist([hsv], [0, 1, 2], None, [8, 8, 8],
-                        [0, 180, 0, 256, 0, 256])
-    cv2.normalize(hist, hist)
-    return hist.flatten()
+# Main Streamlit app
+st.title("📂 Image Similarity Clustering (90%+ match)")
+st.write("Uploads images — groups them if they're at least 90% similar (ignores size).")
 
-# --- Calculate combined similarity ---
-def combined_similarity(feat1, feat2, hist1, hist2):
-    shape_sim = cosine_similarity([feat1], [feat2])[0][0]
-    color_sim = cv2.compareHist(hist1.astype("float32"), hist2.astype("float32"), cv2.HISTCMP_CORREL)
-    return (shape_sim + color_sim) / 2  # equal weight to shape & color
-
-# --- Group images based on similarity ---
-def group_images(images, threshold=0.9):
-    model = load_model()
-    features = []
-    colors = []
-    for img in images:
-        features.append(extract_deep_features(img, model))
-        colors.append(extract_color_histogram(img))
-
-    groups = []
-    visited = set()
-
-    for i in range(len(images)):
-        if i in visited:
-            continue
-        group = [i]
-        visited.add(i)
-        for j in range(i + 1, len(images)):
-            if j in visited:
-                continue
-            sim = combined_similarity(features[i], features[j], colors[i], colors[j])
-            if sim >= threshold:
-                group.append(j)
-                visited.add(j)
-        groups.append(group)
-    return groups
-
-# --- Streamlit UI ---
-st.title("📸 Image Similarity Clustering (90% Match with Color Sensitivity)")
-uploaded_files = st.file_uploader("Upload images", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Upload Images", accept_multiple_files=True, type=["png", "jpg", "jpeg"])
 
 if uploaded_files:
-    images = [Image.open(file).convert("RGB") for file in uploaded_files]
-    groups = group_images(images, threshold=0.9)
+    # Save uploaded files to temp dir
+    temp_dir = "uploaded_images"
+    os.makedirs(temp_dir, exist_ok=True)
+    file_paths = []
+    for file in uploaded_files:
+        path = os.path.join(temp_dir, file.name)
+        with open(path, "wb") as f:
+            f.write(file.read())
+        file_paths.append(path)
 
-    st.subheader("Clustering Results")
-    for idx, group in enumerate(groups, 1):
-        st.markdown(f"**Group {idx}:**")
-        cols = st.columns(len(group))
-        for col, img_idx in zip(cols, group):
-            col.image(images[img_idx], use_column_width=True)
+    # Extract features
+    st.write("🔍 Extracting features...")
+    features = [get_features(p) for p in file_paths]
+
+    # Clustering manually (90%+ similarity)
+    clusters = []
+    visited = set()
+    for i, feat1 in enumerate(features):
+        if i in visited:
+            continue
+        cluster = [file_paths[i]]
+        visited.add(i)
+        for j, feat2 in enumerate(features):
+            if j not in visited:
+                sim = cosine_similarity([feat1], [feat2])[0][0]
+                if sim >= 0.90:
+                    cluster.append(file_paths[j])
+                    visited.add(j)
+        clusters.append(cluster)
+
+    # Save clusters into folders
+    output_dir = "clusters"
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    os.makedirs(output_dir)
+
+    for idx, cluster in enumerate(clusters, start=1):
+        cluster_folder = os.path.join(output_dir, f"cluster_{idx}")
+        os.makedirs(cluster_folder, exist_ok=True)
+        for img_path in cluster:
+            shutil.copy(img_path, cluster_folder)
+
+    st.success(f"✅ Found {len(clusters)} clusters. Saved in '{output_dir}' folder.")
+    for idx, cluster in enumerate(clusters, start=1):
+        st.subheader(f"Cluster {idx}")
+        for img_path in cluster:
+            st.image(Image.open(img_path), caption=os.path.basename(img_path), use_container_width=True)
