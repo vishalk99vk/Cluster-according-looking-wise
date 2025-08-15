@@ -1,38 +1,32 @@
 import streamlit as st
+import os
 import numpy as np
 from PIL import Image
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.cluster import DBSCAN
 from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
 from tensorflow.keras.preprocessing import image
 import pandas as pd
 from io import BytesIO
 
+# Load ResNet50 model
+model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
+
 st.title("Image Similarity Clustering App")
-
-# Cache model to avoid reloading
-@st.cache_resource
-def load_model():
-    return ResNet50(weights='imagenet', include_top=False, pooling='avg')
-
-model = load_model()
 
 uploaded_files = st.file_uploader(
     "Upload Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True
 )
 
-# Extract features from image (BytesIO or path)
-def extract_features(img_file):
-    img = Image.open(img_file).convert("RGB").resize((224, 224))
+def extract_features(img_path):
+    img = image.load_img(img_path, target_size=(224, 224))
     x = image.img_to_array(img)
     x = np.expand_dims(x, axis=0)
     x = preprocess_input(x)
     features = model.predict(x, verbose=0)
     return features.flatten()
 
-# Extract common cluster name from filenames
 def get_common_cluster_name(filenames):
-    names = [fname.split('.')[0] for fname in filenames]
+    names = [os.path.splitext(f)[0] for f in filenames]
     if len(names) == 1:
         return names[0]
     split_names = [name.split() for name in names]
@@ -43,33 +37,57 @@ def get_common_cluster_name(filenames):
     return common_name if common_name else names[0]
 
 if uploaded_files:
-    st.info("Extracting features...")
-    # Extract features for all images
-    features = np.array([extract_features(file) for file in uploaded_files])
+    # Save uploaded files temporarily
+    temp_dir = "temp_uploads"
+    os.makedirs(temp_dir, exist_ok=True)
+    file_paths = []
+    for file in uploaded_files:
+        file_path = os.path.join(temp_dir, file.name)
+        with open(file_path, "wb") as f:
+            f.write(file.read())
+        file_paths.append(file_path)
 
-    st.info("Clustering images...")
-    # DBSCAN clustering using cosine distance
-    clustering = DBSCAN(eps=0.1, min_samples=1, metric='cosine').fit(features)
-    labels = clustering.labels_
+    # Extract features
+    features = np.array([extract_features(path) for path in file_paths])
 
-    clusters = {}
-    for label, file in zip(labels, uploaded_files):
-        clusters.setdefault(label, []).append(file)
+    # Compute similarity
+    sim_matrix = cosine_similarity(features)
 
-    # Display clusters and prepare Excel
+    # Manual clustering based on threshold
+    threshold = 0.9
+    visited = set()
+    clusters = []
+    for idx, file in enumerate(file_paths):
+        if idx in visited:
+            continue
+        cluster = [idx]
+        visited.add(idx)
+        for j in range(idx + 1, len(file_paths)):
+            if j not in visited and sim_matrix[idx, j] >= threshold:
+                cluster.append(j)
+                visited.add(j)
+        clusters.append(cluster)
+
+    # Prepare DataFrame for Excel
     data = []
-    for cluster_id, files in clusters.items():
-        cluster_filenames = [f.name for f in files]
-        cluster_name = get_common_cluster_name(cluster_filenames)
-        st.subheader(f"Cluster: {cluster_name}")
-        cols = st.columns(len(files))
-        for col, f in zip(cols, files):
-            img = Image.open(f)
-            col.image(img, caption=f.name, use_container_width=True)
-            name_no_ext = f.name.split('.')[0]
-            data.append([cluster_name, name_no_ext, f.name])
+    for cluster in clusters:
+        cluster_files = [os.path.basename(file_paths[i]) for i in cluster]
+        cluster_name = get_common_cluster_name(cluster_files)
+        for fname in cluster_files:
+            name_no_ext = os.path.splitext(fname)[0]
+            data.append([cluster_name, name_no_ext, fname])
 
     df = pd.DataFrame(data, columns=["Cluster Name", "Image Name (No Ext)", "Exact Filename"])
+
+    # Display clusters
+    for cluster in clusters:
+        cluster_files = [os.path.basename(file_paths[i]) for i in cluster]
+        cluster_name = get_common_cluster_name(cluster_files)
+        st.subheader(f"Cluster: {cluster_name}")
+        cols = st.columns(len(cluster_files))
+        for col, idx in zip(cols, cluster):
+            img = Image.open(file_paths[idx])
+            col.image(img, caption=os.path.basename(file_paths[idx]), use_container_width=True)
 
     # Download Excel
     excel_buffer = BytesIO()
