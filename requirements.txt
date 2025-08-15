@@ -1,7 +1,6 @@
 streamlit
-torch
-torchvision
-opencv-python-headless
+tensorflow
 scikit-learn
 numpy
 pillow
+opencv-python-headless
