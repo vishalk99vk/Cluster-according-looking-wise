@@ -1,39 +1,35 @@
 import streamlit as st
 import torch
-import torchvision.transforms as transforms
-from torchvision.models import resnet18, ResNet18_Weights
+import clip
 from PIL import Image
 import numpy as np
 from sklearn.cluster import AgglomerativeClustering
-import io
 
 # ---------------------------
-# Load ResNet18 (lighter model)
+# Load CLIP Model
 # ---------------------------
 @st.cache_resource
-def load_model():
-    weights = ResNet18_Weights.IMAGENET1K_V1
-    model = resnet18(weights=weights)
-    model = torch.nn.Sequential(*(list(model.children())[:-1]))  # remove final layer
-    model.eval()
-    return model, weights.transforms()
+def load_clip_model():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, preprocess = clip.load("ViT-B/32", device=device)
+    return model, preprocess, device
 
-model, preprocess = load_model()
+model, preprocess, device = load_clip_model()
 
 # ---------------------------
-# Extract features from image
+# Extract features
 # ---------------------------
 def get_features(image: Image.Image):
+    image = preprocess(image).unsqueeze(0).to(device)
     with torch.no_grad():
-        img_tensor = preprocess(image).unsqueeze(0)
-        features = model(img_tensor).squeeze().numpy()
-    return features
+        features = model.encode_image(image)
+    return features.cpu().numpy().flatten()
 
 # ---------------------------
 # Streamlit UI
 # ---------------------------
-st.title("Image Similarity Grouper (Lightweight - ResNet18)")
-st.write("Upload images and group them by visual similarity.")
+st.title("Image Similarity Grouper (CLIP-powered)")
+st.write("Upload images — they’ll be grouped by visual & semantic similarity.")
 
 uploaded_files = st.file_uploader("Upload images", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
@@ -43,18 +39,18 @@ if uploaded_files:
     features = []
 
     for file in uploaded_files:
-        image = Image.open(file).convert("RGB")
-        images.append(image)
+        img = Image.open(file).convert("RGB")
+        images.append(img)
         filenames.append(file.name)
-        features.append(get_features(image))
+        features.append(get_features(img))
 
-    features = np.array(features).reshape(len(features), -1)
+    features = np.array(features)
 
     n_clusters = st.slider("Number of clusters", 2, min(len(images), 10), 3)
     clustering = AgglomerativeClustering(n_clusters=n_clusters)
     labels = clustering.fit_predict(features)
 
-    # Show grouped images
+    # Show results
     for cluster_id in range(n_clusters):
         st.subheader(f"Cluster {cluster_id + 1}")
         cols = st.columns(5)
