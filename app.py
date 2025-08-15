@@ -13,9 +13,24 @@ model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
 
 st.title("Image Similarity Clustering App")
 
-uploaded_files = st.file_uploader(
+# Initialize session state for uploaded files
+if 'uploaded_files' not in st.session_state:
+    st.session_state.uploaded_files = []
+
+# File uploader
+uploaded = st.file_uploader(
     "Upload Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True
 )
+
+if uploaded:
+    st.session_state.uploaded_files = uploaded
+
+# Clear All button
+if st.button("🗑️ Clear All"):
+    st.session_state.uploaded_files = []
+    st.experimental_rerun()
+
+uploaded_files = st.session_state.uploaded_files
 
 def extract_features(img_path):
     img = image.load_img(img_path, target_size=(224, 224))
@@ -53,7 +68,7 @@ if uploaded_files:
     # Compute similarity
     sim_matrix = cosine_similarity(features)
 
-    # Manual clustering based on threshold
+    # Manual clustering based on 95% threshold
     threshold = 0.95
     visited = set()
     clusters = []
