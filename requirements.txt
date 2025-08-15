@@ -1,6 +1,6 @@
-streamlit>=1.36
-torch>=2.0
-torchvision>=0.15
-scikit-learn>=1.5
-pillow>=10.3
-numpy>=1.26
+torch
+torchvision
+opencv-python-headless
+scikit-learn
+numpy
+pillow
