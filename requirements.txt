@@ -1,5 +1,6 @@
 streamlit>=1.36
-tensorflow-cpu==2.15.0
+torch>=2.2
+torchvision>=0.17
 scikit-learn>=1.5
 pillow>=10.3
 numpy>=1.26
