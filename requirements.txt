@@ -1,6 +1,8 @@
 streamlit
-pillow
+tensorflow
+keras
 numpy
-scikit-learn
 pandas
+scikit-learn
+Pillow
 openpyxl
