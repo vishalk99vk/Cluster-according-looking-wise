@@ -1,128 +1,65 @@
-import io
-import numpy as np
-from PIL import Image
 import streamlit as st
-
 import torch
-import torch.nn as nn
-import torchvision.transforms as T
+import torchvision.transforms as transforms
 from torchvision.models import resnet18, ResNet18_Weights
+from PIL import Image
+import numpy as np
 from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics.pairwise import cosine_distances
+import io
 
-st.set_page_config(page_title="Image Grouper", layout="wide")
-st.title("🖼️ Image Grouper — Lightweight ResNet18 Version")
-st.caption("Upload images and group them by visual similarity.")
-
-# Sidebar controls
-with st.sidebar:
-    max_side = st.slider("Max image side (px)", 128, 512, 256, 32)
-    dist_thresh = st.slider("Cosine distance threshold", 0.05, 0.9, 0.3, 0.01)
-    min_cluster_size = st.number_input("Minimum cluster size", 1, 10, 1)
-
-# Cache model
+# ---------------------------
+# Load ResNet18 (lighter model)
+# ---------------------------
 @st.cache_resource
 def load_model():
     weights = ResNet18_Weights.IMAGENET1K_V1
     model = resnet18(weights=weights)
-    backbone = nn.Sequential(*list(model.children())[:-2])  # remove head
-    backbone.eval()
-    for p in backbone.parameters():
-        p.requires_grad_(False)
-    preprocess = weights.transforms()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    backbone.to(device)
-    return backbone, preprocess, device
+    model = torch.nn.Sequential(*(list(model.children())[:-1]))  # remove final layer
+    model.eval()
+    return model, weights.transforms()
 
-# Cache image load
-@st.cache_data
-def load_image(file_bytes):
-    return Image.open(io.BytesIO(file_bytes)).convert("RGB")
+model, preprocess = load_model()
 
-# Extract features
-@torch.inference_mode()
-def extract_features(images, max_side):
-    backbone, preprocess, device = load_model()
+# ---------------------------
+# Extract features from image
+# ---------------------------
+def get_features(image: Image.Image):
+    with torch.no_grad():
+        img_tensor = preprocess(image).unsqueeze(0)
+        features = model(img_tensor).squeeze().numpy()
+    return features
 
-    def resize_keep_ratio(img):
-        w, h = img.size
-        scale = max_side / max(w, h)
-        return img.resize((int(w*scale), int(h*scale)), Image.BILINEAR)
+# ---------------------------
+# Streamlit UI
+# ---------------------------
+st.title("Image Similarity Grouper (Lightweight - ResNet18)")
+st.write("Upload images and group them by visual similarity.")
 
-    feats = []
-    for img in images:
-        img_small = resize_keep_ratio(img)
-        w, h = img_small.size
-        side = max(w, h)
-        canvas = Image.new("RGB", (side, side), (0, 0, 0))
-        canvas.paste(img_small, ((side - w)//2, (side - h)//2))
-        x = preprocess(canvas).unsqueeze(0).to(device)
-        fmap = backbone(x)
-        pooled = torch.nn.functional.adaptive_avg_pool2d(fmap, (1, 1)).flatten(1)
-        v = torch.nn.functional.normalize(pooled, dim=1)
-        feats.append(v.cpu().numpy()[0])
-    return np.stack(feats, axis=0)
+uploaded_files = st.file_uploader("Upload images", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
-# File uploader
-files = st.file_uploader(
-    "Upload images", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True
-)
+if uploaded_files:
+    images = []
+    filenames = []
+    features = []
 
-if not files:
-    st.info("⬆️ Upload at least 2 images")
-    st.stop()
+    for file in uploaded_files:
+        image = Image.open(file).convert("RGB")
+        images.append(image)
+        filenames.append(file.name)
+        features.append(get_features(image))
 
-if len(files) < 2:
-    st.warning("Need at least 2 images to cluster.")
+    features = np.array(features).reshape(len(features), -1)
 
-# Load images
-pil_images = []
-filenames = []
-for f in files:
-    try:
-        img = load_image(f.read())
-        pil_images.append(img)
-        filenames.append(f.name)
-    except Exception as e:
-        st.error(f"Error loading {f.name}: {e}")
+    n_clusters = st.slider("Number of clusters", 2, min(len(images), 10), 3)
+    clustering = AgglomerativeClustering(n_clusters=n_clusters)
+    labels = clustering.fit_predict(features)
 
-# Extract features
-with st.spinner("Extracting features…"):
-    feats = extract_features(pil_images, max_side=max_side)
-
-# Cluster
-D = cosine_distances(feats)
-with st.spinner("Clustering…"):
-    clustering = AgglomerativeClustering(
-        n_clusters=None, metric="cosine", linkage="average",
-        distance_threshold=dist_thresh
-    )
-    labels = clustering.fit_predict(feats)
-
-# Group results
-clusters = {}
-for idx, lab in enumerate(labels):
-    clusters.setdefault(lab, []).append(idx)
-
-if min_cluster_size > 1:
-    clusters = {k: v for k, v in clusters.items() if len(v) >= min_cluster_size}
-
-st.success(f"Found {len(clusters)} clusters.")
-
-# Show clusters
-for cid, members in sorted(clusters.items(), key=lambda kv: -len(kv[1])):
-    st.subheader(f"Cluster {cid} — {len(members)} images")
-    cols = st.columns(6)
-    for i, idx in enumerate(members):
-        with cols[i % 6]:
-            st.image(pil_images[idx], caption=filenames[idx], use_column_width=True)
-
-# Download CSV
-import pandas as pd
-label_df = pd.DataFrame({"filename": filenames, "cluster": labels})
-st.download_button(
-    "Download CSV",
-    data=label_df.to_csv(index=False).encode("utf-8"),
-    file_name="clusters.csv",
-    mime="text/csv",
-)
+    # Show grouped images
+    for cluster_id in range(n_clusters):
+        st.subheader(f"Cluster {cluster_id + 1}")
+        cols = st.columns(5)
+        idx = 0
+        for img, name, label in zip(images, filenames, labels):
+            if label == cluster_id:
+                cols[idx % 5].image(img, caption=name, use_column_width=True)
+                idx += 1
