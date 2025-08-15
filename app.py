@@ -1,103 +1,126 @@
 import streamlit as st
 import os
-import numpy as np
+import tempfile
+import shutil
 from PIL import Image
+import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
-from tensorflow.keras.preprocessing import image
 import pandas as pd
 from io import BytesIO
+import openpyxl
 
-# Load ResNet50 model for feature extraction
-model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
+# ========== IMAGE FEATURE EXTRACTION ==========
+def get_image_feature_vector(img_path):
+    img = Image.open(img_path).convert("RGB").resize((256, 256))
+    arr = np.array(img) / 255.0
+    return arr.flatten()
 
-st.title("Image Similarity Clustering App")
+def get_common_name(names):
+    if not names:
+        return "Unknown"
+    split_names = [n.split('-') for n in names]
+    min_parts = min(len(s) for s in split_names)
+    common_parts = []
+    for i in range(min_parts):
+        part_set = set(s[i].strip() for s in split_names)
+        if len(part_set) == 1:
+            common_parts.append(part_set.pop())
+        else:
+            break
+    return ' - '.join(common_parts) if common_parts else names[0]
 
-uploaded_files = st.file_uploader(
-    "Upload Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True
-)
+# ========== CLUSTERING BY SIMILARITY ==========
+def cluster_images(image_paths, similarity_threshold=0.9):
+    features = [get_image_feature_vector(p) for p in image_paths]
+    similarity_matrix = cosine_similarity(features)
 
-def extract_features(img_path):
-    img = image.load_img(img_path, target_size=(224, 224))
-    x = image.img_to_array(img)
-    x = np.expand_dims(x, axis=0)
-    x = preprocess_input(x)
-    features = model.predict(x)
-    return features.flatten()
-
-def get_common_cluster_name(filenames):
-    # Extract common substring ignoring numbers and extensions
-    names = [os.path.splitext(f)[0] for f in filenames]
-    if len(names) == 1:
-        return names[0]
-    split_names = [name.split() for name in names]
-    common = set(split_names[0])
-    for parts in split_names[1:]:
-        common &= set(parts)
-    common_name = " ".join([w for w in names[0].split() if w in common])
-    return common_name if common_name else names[0]
-
-if uploaded_files:
-    # Save uploaded files temporarily
-    temp_dir = "temp_uploads"
-    os.makedirs(temp_dir, exist_ok=True)
-    file_paths = []
-    for file in uploaded_files:
-        file_path = os.path.join(temp_dir, file.name)
-        with open(file_path, "wb") as f:
-            f.write(file.read())
-        file_paths.append(file_path)
-
-    # Extract features
-    features = [extract_features(path) for path in file_paths]
-    features = np.array(features)
-
-    # Compute similarity
-    sim_matrix = cosine_similarity(features)
-
-    # Clustering (manual based on threshold)
-    threshold = 0.9
-    visited = set()
     clusters = []
-    for idx, file in enumerate(file_paths):
-        if idx in visited:
+    visited = set()
+    for i, path in enumerate(image_paths):
+        if i in visited:
             continue
-        cluster = [idx]
-        visited.add(idx)
-        for j in range(idx + 1, len(file_paths)):
-            if j not in visited and sim_matrix[idx, j] >= threshold:
-                cluster.append(j)
+        cluster = [path]
+        visited.add(i)
+        for j in range(i+1, len(image_paths)):
+            if j not in visited and similarity_matrix[i][j] >= similarity_threshold:
+                cluster.append(image_paths[j])
                 visited.add(j)
         clusters.append(cluster)
+    return clusters
 
-    # Prepare DataFrame for Excel
+# ========== EXCEL EXPORT ==========
+def export_clusters_to_excel(clusters):
     data = []
     for cluster in clusters:
-        cluster_files = [os.path.basename(file_paths[i]) for i in cluster]
-        cluster_name = get_common_cluster_name(cluster_files)
-        for fname in cluster_files:
-            name_no_ext = os.path.splitext(fname)[0]
-            data.append([cluster_name, name_no_ext, fname])
+        cluster_names = [os.path.splitext(os.path.basename(p))[0] for p in cluster]
+        full_names = [os.path.basename(p) for p in cluster]
+        cluster_name = get_common_name(cluster_names)
+        for cn, fn in zip(cluster_names, full_names):
+            data.append([cluster_name, cn, fn])
+    df = pd.DataFrame(data, columns=["Cluster Name", "Image Name (No Ext)", "Full Image Name"])
+    
+    output = BytesIO()
+    df.to_excel(output, index=False)
+    output.seek(0)
+    return output
 
-    df = pd.DataFrame(data, columns=["Cluster Name", "Image Name (No Ext)", "Exact Filename"])
+# ========== STREAMLIT UI ==========
+st.title("📸 Image Similarity Clustering (90%) with Disk Fallback")
 
-    # Display clusters in Streamlit
-    for cluster in clusters:
-        cluster_files = [os.path.basename(file_paths[i]) for i in cluster]
-        cluster_name = get_common_cluster_name(cluster_files)
-        st.subheader(f"Cluster: {cluster_name}")
-        cols = st.columns(len(cluster_files))
-        for col, idx in zip(cols, cluster):
-            img = Image.open(file_paths[idx])
-            col.image(img, caption=os.path.basename(file_paths[idx]), use_container_width=True)
+uploaded_files = st.file_uploader(
+    "Upload images", type=["jpg", "jpeg", "png"], accept_multiple_files=True
+)
 
-    # Download Excel
-    excel_buffer = BytesIO()
-    df.to_excel(excel_buffer, index=False)
-    excel_buffer.seek(0)
+if uploaded_files:
+    total_size = sum([len(f.getbuffer()) for f in uploaded_files]) / (1024 * 1024)
+    st.write(f"Total upload size: **{total_size:.2f} MB**")
+
+    if total_size <= 150:
+        # In-memory processing
+        st.info("Processing in memory...")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = []
+            for file in uploaded_files:
+                file_path = os.path.join(tmpdir, file.name)
+                with open(file_path, "wb") as f:
+                    f.write(file.getbuffer())
+                paths.append(file_path)
+
+            clusters = cluster_images(paths, similarity_threshold=0.9)
+
+    else:
+        # Disk processing for heavy uploads
+        st.warning("Large upload detected. Using disk processing to avoid memory issues...")
+        temp_folder = "temp_processing"
+        os.makedirs(temp_folder, exist_ok=True)
+
+        paths = []
+        for file in uploaded_files:
+            file_path = os.path.join(temp_folder, file.name)
+            with open(file_path, "wb") as f:
+                f.write(file.getbuffer())
+            paths.append(file_path)
+
+        clusters = cluster_images(paths, similarity_threshold=0.9)
+
+        # Cleanup after processing
+        shutil.rmtree(temp_folder)
+
+    # Display clusters
+    for idx, cluster in enumerate(clusters, 1):
+        cluster_names = [os.path.splitext(os.path.basename(p))[0] for p in cluster]
+        cluster_display_name = get_common_name(cluster_names)
+        st.subheader(f"🗂 Cluster: {cluster_display_name}")
+        cols = st.columns(5)
+        for i, img_path in enumerate(cluster):
+            with cols[i % 5]:
+                st.image(img_path, caption=os.path.basename(img_path), use_container_width=True)
+
+    # Export to Excel
+    excel_data = export_clusters_to_excel(clusters)
     st.download_button(
-        label="📥 Download Clusters Excel",
-        data=excel_buffer,
+        label="📥 Download Cluster Data (Excel)",
+        data=excel_data,
         file_name="image_clusters.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
