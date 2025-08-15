@@ -1,6 +1,6 @@
-streamlit==1.29.0
-numpy==1.25.0
-pillow==10.0.0
-scikit-learn==1.3.0
-pandas==2.1.1
-tensorflow==2.13.0
+# requirements.txt
+git+https://github.com/openai/CLIP.git
+torch
+torchvision
+scikit-learn
+Pillow
