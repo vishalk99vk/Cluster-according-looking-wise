@@ -7,11 +7,10 @@ from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
 from tensorflow.keras.preprocessing import image
 import pandas as pd
 from io import BytesIO
-from sklearn.cluster import DBSCAN # Import DBSCAN for more robust clustering
+from sklearn.cluster import DBSCAN
+import cv2
 
-# Load ResNet50 model for feature extraction
-# ResNet50 is a powerful model for general object recognition, but may
-# not be sensitive enough to subtle color differences on similar objects.
+# Load ResNet50 model for general image feature extraction
 model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
 
 st.title("Image Similarity Clustering App")
@@ -32,25 +31,54 @@ if uploaded:
 # Clear All button
 if st.button("🗑️ Clear All"):
     st.session_state.uploaded_files = []
-    st.stop()  # Stop execution to refresh the uploader
+    st.stop()
+
+def get_color_histogram(img_path):
+    """
+    Extracts a color histogram from an image.
+    This provides a feature vector that is highly sensitive to color differences.
+    We use the HSV color space which is generally more robust to lighting changes.
+    """
+    img = cv2.imread(img_path)
+    if img is None:
+        return np.zeros(256 * 3) # Return a zero vector if image fails to load
+    
+    # Convert image to HSV color space
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    
+    # Calculate histograms for H, S, and V channels
+    hist_h = cv2.calcHist([hsv], [0], None, [180], [0, 180])
+    hist_s = cv2.calcHist([hsv], [1], None, [256], [0, 256])
+    hist_v = cv2.calcHist([hsv], [2], None, [256], [0, 256])
+    
+    # Normalize and flatten histograms
+    cv2.normalize(hist_h, hist_h)
+    cv2.normalize(hist_s, hist_s)
+    cv2.normalize(hist_v, hist_v)
+    
+    return np.concatenate([hist_h.flatten(), hist_s.flatten(), hist_v.flatten()])
 
 def extract_features(img_path):
     """
-    Extracts features from an image using the ResNet50 model.
-    The image is resized, converted to an array, and preprocessed for the model.
+    Extracts a combined feature vector: visual features from ResNet50 and color features.
     """
+    # ResNet50 features
     img = Image.open(img_path).convert('RGB')
-    img = img.resize((224, 224))
-    x = image.img_to_array(img)
+    img_resized = img.resize((224, 224))
+    x = image.img_to_array(img_resized)
     x = np.expand_dims(x, axis=0)
     x = preprocess_input(x)
-    features = model.predict(x)
-    return features.flatten()
+    resnet_features = model.predict(x).flatten()
+    
+    # Color histogram features
+    color_features = get_color_histogram(img_path)
+    
+    # Concatenate the features to create a single, richer feature vector
+    return np.concatenate([resnet_features, color_features])
 
 def get_common_cluster_name(filenames):
     """
     Generates a common name for a cluster based on the filenames.
-    This logic remains the same as it correctly identifies common words.
     """
     names = [os.path.splitext(f)[0] for f in filenames]
     if not names:
@@ -58,18 +86,14 @@ def get_common_cluster_name(filenames):
     if len(names) == 1:
         return names[0]
     
-    # Split filenames into words
     split_names = [name.split() for name in names]
     
-    # Find the intersection of words across all filenames
     common = set(split_names[0])
     for parts in split_names[1:]:
         common &= set(parts)
 
-    # Reconstruct the common name from the first filename
     common_name = " ".join([w for w in names[0].split() if w in common])
     
-    # If no common name is found, use the first filename as a fallback
     return common_name if common_name else names[0]
 
 if st.session_state.uploaded_files:
@@ -78,38 +102,28 @@ if st.session_state.uploaded_files:
     os.makedirs(temp_dir, exist_ok=True)
     file_paths = []
     for file in st.session_state.uploaded_files:
-        # Use a unique path to avoid name collisions
         file_path = os.path.join(temp_dir, file.name)
         with open(file_path, "wb") as f:
             f.write(file.read())
         file_paths.append(file_path)
 
     # Extract features for all images
+    # We now get the combined visual and color features
     features = [extract_features(path) for path in file_paths]
     features = np.array(features)
 
-    # Compute similarity (which is a form of distance)
+    # Compute similarity
     sim_matrix = cosine_similarity(features)
 
-    # Convert similarity to a distance matrix for DBSCAN
-    # DBSCAN requires a distance metric, and distance = 1 - similarity.
+    # Clamp values to ensure they are within a valid range
+    sim_matrix = np.clip(sim_matrix, 0.0, 1.0)
+
+    # Convert similarity to a distance matrix
     dist_matrix = 1 - sim_matrix
     
-    # --- FIX: Ensure no negative values exist due to floating-point imprecision ---
-    # The DBSCAN algorithm requires non-negative distances. In rare cases,
-    # 1 - cosine_similarity can result in a tiny negative number.
-    dist_matrix = np.maximum(0, dist_matrix)
-    # -----------------------------------------------------------------------------
-    
     # Clustering using DBSCAN
-    # DBSCAN is more suitable here as it doesn't require a fixed number of clusters
-    # and can find clusters of various shapes.
-    # The 'eps' parameter is the maximum distance between two samples for one to be considered
-    # as in the neighborhood of the other. It's similar to your 'threshold', but for distance.
-    # 'min_samples' is the number of samples in a neighborhood for a point to be considered as a core point.
-    # Setting min_samples=1 means every point can potentially be a core point, which is good
-    # for finding clusters even with only two images.
-    dbscan = DBSCAN(eps=0.05, min_samples=1, metric='precomputed') # Adjusted eps for a tighter cluster
+    # A small 'eps' value is used to force tighter clusters.
+    dbscan = DBSCAN(eps=0.05, min_samples=1, metric='precomputed')
     labels = dbscan.fit_predict(dist_matrix)
 
     # Create clusters from DBSCAN labels
