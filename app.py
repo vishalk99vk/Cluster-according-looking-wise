@@ -95,6 +95,12 @@ if st.session_state.uploaded_files:
     # DBSCAN requires a distance metric, and distance = 1 - similarity.
     dist_matrix = 1 - sim_matrix
     
+    # --- FIX: Ensure no negative values exist due to floating-point imprecision ---
+    # The DBSCAN algorithm requires non-negative distances. In rare cases,
+    # 1 - cosine_similarity can result in a tiny negative number.
+    dist_matrix = np.maximum(0, dist_matrix)
+    # -----------------------------------------------------------------------------
+    
     # Clustering using DBSCAN
     # DBSCAN is more suitable here as it doesn't require a fixed number of clusters
     # and can find clusters of various shapes.
