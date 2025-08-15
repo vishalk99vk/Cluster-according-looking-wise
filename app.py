@@ -8,13 +8,13 @@ from tensorflow.keras.preprocessing import image
 import pandas as pd
 from io import BytesIO
 
-# Load ResNet50 model
+# Load ResNet50 model for feature extraction
 model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
 
 st.title("Image Similarity Clustering App")
 
 # Initialize session state for uploaded files
-if 'uploaded_files' not in st.session_state:
+if "uploaded_files" not in st.session_state:
     st.session_state.uploaded_files = []
 
 # File uploader
@@ -22,22 +22,21 @@ uploaded = st.file_uploader(
     "Upload Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True
 )
 
+# Add new uploads to session state
 if uploaded:
-    st.session_state.uploaded_files = uploaded
+    st.session_state.uploaded_files.extend(uploaded)
 
 # Clear All button
 if st.button("🗑️ Clear All"):
     st.session_state.uploaded_files = []
-    st.experimental_rerun()
-
-uploaded_files = st.session_state.uploaded_files
+    st.stop()  # Stop execution to refresh the uploader
 
 def extract_features(img_path):
     img = image.load_img(img_path, target_size=(224, 224))
     x = image.img_to_array(img)
     x = np.expand_dims(x, axis=0)
     x = preprocess_input(x)
-    features = model.predict(x, verbose=0)
+    features = model.predict(x)
     return features.flatten()
 
 def get_common_cluster_name(filenames):
@@ -51,24 +50,25 @@ def get_common_cluster_name(filenames):
     common_name = " ".join([w for w in names[0].split() if w in common])
     return common_name if common_name else names[0]
 
-if uploaded_files:
+if st.session_state.uploaded_files:
     # Save uploaded files temporarily
     temp_dir = "temp_uploads"
     os.makedirs(temp_dir, exist_ok=True)
     file_paths = []
-    for file in uploaded_files:
+    for file in st.session_state.uploaded_files:
         file_path = os.path.join(temp_dir, file.name)
         with open(file_path, "wb") as f:
             f.write(file.read())
         file_paths.append(file_path)
 
     # Extract features
-    features = np.array([extract_features(path) for path in file_paths])
+    features = [extract_features(path) for path in file_paths]
+    features = np.array(features)
 
     # Compute similarity
     sim_matrix = cosine_similarity(features)
 
-    # Manual clustering based on 95% threshold
+    # Clustering (manual based on 95% threshold)
     threshold = 0.95
     visited = set()
     clusters = []
@@ -94,7 +94,7 @@ if uploaded_files:
 
     df = pd.DataFrame(data, columns=["Cluster Name", "Image Name (No Ext)", "Exact Filename"])
 
-    # Display clusters
+    # Display clusters in Streamlit
     for cluster in clusters:
         cluster_files = [os.path.basename(file_paths[i]) for i in cluster]
         cluster_name = get_common_cluster_name(cluster_files)
