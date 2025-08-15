@@ -3,15 +3,16 @@ import os
 import numpy as np
 from PIL import Image
 from sklearn.metrics.pairwise import cosine_similarity
-from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
-from tensorflow.keras.preprocessing import image
+# The following two imports for ResNet50 have been removed to solve the ModuleNotFoundError.
+# from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
+# from tensorflow.keras.preprocessing import image
 import pandas as pd
 from io import BytesIO
 from sklearn.cluster import DBSCAN
-import cv2
 
-# Load ResNet50 model for general image feature extraction
-model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
+# The ResNet50 model and feature extraction is removed to resolve the TensorFlow dependency.
+# The script will now rely solely on color features for clustering.
+# model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
 
 st.title("Image Similarity Clustering App")
 
@@ -35,46 +36,38 @@ if st.button("🗑️ Clear All"):
 
 def get_color_histogram(img_path):
     """
-    Extracts a color histogram from an image.
-    This provides a feature vector that is highly sensitive to color differences.
-    We use the HSV color space which is generally more robust to lighting changes.
+    Extracts a simple RGB color histogram from an image using PIL.
+    This replaces the cv2-based function and ensures the script can run without it.
+    The histogram provides a feature vector sensitive to color differences.
     """
-    img = cv2.imread(img_path)
-    if img is None:
-        return np.zeros(256 * 3) # Return a zero vector if image fails to load
-    
-    # Convert image to HSV color space
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    
-    # Calculate histograms for H, S, and V channels
-    hist_h = cv2.calcHist([hsv], [0], None, [180], [0, 180])
-    hist_s = cv2.calcHist([hsv], [1], None, [256], [0, 256])
-    hist_v = cv2.calcHist([hsv], [2], None, [256], [0, 256])
-    
-    # Normalize and flatten histograms
-    cv2.normalize(hist_h, hist_h)
-    cv2.normalize(hist_s, hist_s)
-    cv2.normalize(hist_v, hist_v)
-    
-    return np.concatenate([hist_h.flatten(), hist_s.flatten(), hist_v.flatten()])
+    try:
+        img = Image.open(img_path).convert('RGB')
+        
+        # Resize image to a small size to speed up histogram calculation
+        img_resized = img.resize((32, 32))
+        
+        # Get the histogram from the image data
+        hist = img_resized.histogram()
+        
+        # Normalize the histogram
+        hist = np.array(hist, dtype=np.float32)
+        hist /= hist.sum()
+        
+        return hist
+    except Exception as e:
+        st.error(f"Error processing image {os.path.basename(img_path)}: {e}")
+        return np.zeros(256 * 3)
 
 def extract_features(img_path):
     """
-    Extracts a combined feature vector: visual features from ResNet50 and color features.
+    Extracts only the color histogram as the feature vector.
+    The ResNet50-based feature extraction has been removed.
     """
-    # ResNet50 features
-    img = Image.open(img_path).convert('RGB')
-    img_resized = img.resize((224, 224))
-    x = image.img_to_array(img_resized)
-    x = np.expand_dims(x, axis=0)
-    x = preprocess_input(x)
-    resnet_features = model.predict(x).flatten()
-    
     # Color histogram features
     color_features = get_color_histogram(img_path)
     
-    # Concatenate the features to create a single, richer feature vector
-    return np.concatenate([resnet_features, color_features])
+    # Return the color features directly as the full feature vector
+    return color_features
 
 def get_common_cluster_name(filenames):
     """
