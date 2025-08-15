@@ -1,6 +1,6 @@
 streamlit
-pillow
 numpy
+pillow
 scikit-learn
 pandas
-openpyxl
+tensorflow==2.13.0
